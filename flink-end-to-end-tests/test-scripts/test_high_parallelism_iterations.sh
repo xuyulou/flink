@@ -17,54 +17,27 @@
 # limitations under the License.
 ################################################################################
 
+set -Eexuo pipefail
+
 source "$(dirname "$0")"/common.sh
 
-PARALLELISM="${PARALLELISM:-100}"
+PARALLELISM="${1:-25}"
+TM_NUM=2
+let "SLOTS_PER_TM = (PARALLELISM + TM_NUM - 1) / TM_NUM"
 
 TEST=flink-high-parallelism-iterations-test
 TEST_PROGRAM_NAME=HighParallelismIterationsTestProgram
-TEST_PROGRAM_JAR=$TEST_INFRA_DIR/../../flink-end-to-end-tests/$TEST/target/$TEST_PROGRAM_NAME.jar
+TEST_PROGRAM_JAR=${END_TO_END_DIR}/$TEST/target/$TEST_PROGRAM_NAME.jar
 
-echo "Run Not So MiniCluster Iterations Graph Connected Components Program"
+set_config_key "taskmanager.numberOfTaskSlots" "$SLOTS_PER_TM"
 
-cp $FLINK_DIR/conf/flink-conf.yaml $FLINK_DIR/conf/flink-conf.yaml.bak
-
-echo "taskmanager.heap.mb: 52" >> $FLINK_DIR/conf/flink-conf.yaml # 52Mb x 100 TMs = 5Gb total heap
-
-echo "taskmanager.memory.size: 8" >> $FLINK_DIR/conf/flink-conf.yaml # 8Mb
-echo "taskmanager.network.memory.min: 8388608" >> $FLINK_DIR/conf/flink-conf.yaml # 8Mb
-echo "taskmanager.network.memory.max: 8388608" >> $FLINK_DIR/conf/flink-conf.yaml # 8Mb
-echo "taskmanager.memory.segment-size: 8192" >> $FLINK_DIR/conf/flink-conf.yaml # 8Kb
-
-echo "taskmanager.network.netty.server.numThreads: 1" >> $FLINK_DIR/conf/flink-conf.yaml
-echo "taskmanager.network.netty.client.numThreads: 1" >> $FLINK_DIR/conf/flink-conf.yaml
-
-echo "taskmanager.numberOfTaskSlots: 1" >> $FLINK_DIR/conf/flink-conf.yaml
-
+print_mem_use
 start_cluster
+print_mem_use
 
-let TMNUM=$PARALLELISM-1
-echo "Start $TMNUM more task managers"
-for i in `seq 1 $TMNUM`; do
-    $FLINK_DIR/bin/taskmanager.sh start
-done
-
-function test_cleanup {
-  # don't call ourselves again for another signal interruption
-  trap "exit -1" INT
-  # don't call ourselves again for normal exit
-  trap "" EXIT
-
-  stop_cluster
-  $FLINK_DIR/bin/taskmanager.sh stop-all
-
-  # revert our modifications to the Flink distribution
-  mv -f $FLINK_DIR/conf/flink-conf.yaml.bak $FLINK_DIR/conf/flink-conf.yaml
-
-  # make sure to run regular cleanup as well
-  cleanup
-}
-trap test_cleanup INT
-trap test_cleanup EXIT
+let "TM_NUM -= 1"
+start_taskmanagers ${TM_NUM}
+print_mem_use
 
 $FLINK_DIR/bin/flink run -p $PARALLELISM $TEST_PROGRAM_JAR
+print_mem_use

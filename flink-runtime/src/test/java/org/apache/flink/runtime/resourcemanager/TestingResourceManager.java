@@ -24,13 +24,16 @@ import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
 import org.apache.flink.runtime.entrypoint.ClusterInformation;
 import org.apache.flink.runtime.heartbeat.HeartbeatServices;
 import org.apache.flink.runtime.highavailability.HighAvailabilityServices;
-import org.apache.flink.runtime.metrics.MetricRegistry;
+import org.apache.flink.runtime.metrics.groups.ResourceManagerMetricGroup;
 import org.apache.flink.runtime.resourcemanager.exceptions.ResourceManagerException;
 import org.apache.flink.runtime.resourcemanager.slotmanager.SlotManager;
 import org.apache.flink.runtime.rpc.FatalErrorHandler;
 import org.apache.flink.runtime.rpc.RpcService;
 
 import javax.annotation.Nullable;
+
+import java.util.Collection;
+import java.util.Collections;
 
 /**
  * Simple {@link ResourceManager} implementation for testing purposes.
@@ -41,25 +44,23 @@ public class TestingResourceManager extends ResourceManager<ResourceID> {
 			RpcService rpcService,
 			String resourceManagerEndpointId,
 			ResourceID resourceId,
-			ResourceManagerConfiguration resourceManagerConfiguration,
 			HighAvailabilityServices highAvailabilityServices,
 			HeartbeatServices heartbeatServices,
 			SlotManager slotManager,
-			MetricRegistry metricRegistry,
 			JobLeaderIdService jobLeaderIdService,
-			FatalErrorHandler fatalErrorHandler) {
+			FatalErrorHandler fatalErrorHandler,
+			ResourceManagerMetricGroup resourceManagerMetricGroup) {
 		super(
 			rpcService,
 			resourceManagerEndpointId,
 			resourceId,
-			resourceManagerConfiguration,
 			highAvailabilityServices,
 			heartbeatServices,
 			slotManager,
-			metricRegistry,
 			jobLeaderIdService,
 			new ClusterInformation("localhost", 1234),
-			fatalErrorHandler);
+			fatalErrorHandler,
+			resourceManagerMetricGroup);
 	}
 
 	@Override
@@ -73,8 +74,8 @@ public class TestingResourceManager extends ResourceManager<ResourceID> {
 	}
 
 	@Override
-	public void startNewWorker(ResourceProfile resourceProfile) {
-		// noop
+	public Collection<ResourceProfile> startNewWorker(ResourceProfile resourceProfile) {
+		return Collections.emptyList();
 	}
 
 	@Override

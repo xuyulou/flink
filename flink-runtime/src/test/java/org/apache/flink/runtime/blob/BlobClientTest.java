@@ -22,8 +22,7 @@ import org.apache.flink.api.common.JobID;
 import org.apache.flink.configuration.BlobServerOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
-import org.apache.flink.util.FileUtils;
-import org.apache.flink.util.IOUtils;
+import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.TestLogger;
 
 import org.junit.AfterClass;
@@ -34,7 +33,6 @@ import org.junit.rules.TemporaryFolder;
 
 import javax.annotation.Nullable;
 
-import java.io.ByteArrayOutputStream;
 import java.io.EOFException;
 import java.io.File;
 import java.io.FileInputStream;
@@ -42,20 +40,17 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.InetSocketAddress;
-import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Random;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
 
 import static org.apache.flink.runtime.blob.BlobCachePutTest.verifyDeletedEventually;
 import static org.apache.flink.runtime.blob.BlobKey.BlobType.PERMANENT_BLOB;
 import static org.apache.flink.runtime.blob.BlobKey.BlobType.TRANSIENT_BLOB;
 import static org.apache.flink.runtime.blob.BlobKeyTest.verifyKeyDifferentHashEquals;
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.core.Is.is;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
@@ -70,7 +65,7 @@ public class BlobClientTest extends TestLogger {
 	private static final int TEST_BUFFER_SIZE = 17 * 1000;
 
 	/** The instance of the (non-ssl) BLOB server used during the tests. */
-	static BlobServer blobServer;
+	static TestBlobServer blobServer;
 
 	/** The blob service (non-ssl) client configuration. */
 	static Configuration clientConfig;
@@ -87,7 +82,7 @@ public class BlobClientTest extends TestLogger {
 		config.setString(BlobServerOptions.STORAGE_DIRECTORY,
 			temporaryFolder.newFolder().getAbsolutePath());
 
-		blobServer = new BlobServer(config, new VoidBlobStore());
+		blobServer = new TestBlobServer(config, new VoidBlobStore());
 		blobServer.start();
 
 		clientConfig = new Configuration();
@@ -326,7 +321,7 @@ public class BlobClientTest extends TestLogger {
 		return clientConfig;
 	}
 
-	protected BlobServer getBlobServer() {
+	protected TestBlobServer getBlobServer() {
 		return blobServer;
 	}
 
@@ -468,44 +463,6 @@ public class BlobClientTest extends TestLogger {
 		uploadJarFile(getBlobServer(), getBlobClientConfig());
 	}
 
-	@Test
-	public void testDirectoryUploading() throws IOException {
-		final File newFolder = temporaryFolder.newFolder();
-		final File file1 = File.createTempFile("pre", "suff", newFolder);
-		FileUtils.writeFileUtf8(file1, "Test content");
-		final File file2 = File.createTempFile("pre", "suff", newFolder);
-		FileUtils.writeFileUtf8(file2, "Test content 2");
-
-		final Map<String, File> files = new HashMap<>();
-		files.put(file1.getName(), file1);
-		files.put(file2.getName(), file2);
-
-		BlobKey key;
-		final JobID jobId = new JobID();
-		final InetSocketAddress inetAddress = new InetSocketAddress("localhost", getBlobServer().getPort());
-		try (
-			BlobClient client = new BlobClient(
-				inetAddress, getBlobClientConfig())) {
-
-			key = client.uploadFile(jobId, new Path(newFolder.getPath()));
-		}
-
-		final File file = getBlobServer().getFile(jobId, (PermanentBlobKey) key);
-
-		try (ZipInputStream zis = new ZipInputStream(new FileInputStream(file))) {
-			ZipEntry entry;
-			while ((entry = zis.getNextEntry()) != null) {
-				String fileName = entry.getName().replaceFirst("/", "");
-				final ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
-				IOUtils.copyBytes(zis, outputStream, false);
-
-				assertEquals(FileUtils.readFileUtf8(files.get(fileName)),
-					new String(outputStream.toByteArray(), StandardCharsets.UTF_8));
-				zis.closeEntry();
-			}
-		}
-	}
-
 	/**
 	 * Tests the static {@link BlobClient#uploadFiles(InetSocketAddress, Configuration, JobID, List)}} helper.
 	 */
@@ -531,6 +488,60 @@ public class BlobClientTest extends TestLogger {
 
 		try (BlobClient blobClient = new BlobClient(serverAddress, blobClientConfig)) {
 			validateGetAndClose(blobClient.getInternal(jobId, blobKeys.get(0)), testFile);
+		}
+	}
+
+
+	/**
+	 * Tests the socket operation timeout.
+	 */
+	@Test
+	public void testSocketTimeout() {
+		Configuration clientConfig = getBlobClientConfig();
+		int oldSoTimeout = clientConfig.getInteger(BlobServerOptions.SO_TIMEOUT);
+
+		clientConfig.setInteger(BlobServerOptions.SO_TIMEOUT, 50);
+		getBlobServer().setBlockingMillis(10_000);
+
+		try {
+			InetSocketAddress serverAddress = new InetSocketAddress("localhost", getBlobServer().getPort());
+
+			try (BlobClient client = new BlobClient(serverAddress, clientConfig)) {
+				client.getInternal(new JobID(), BlobKey.createKey(TRANSIENT_BLOB));
+
+				fail("Should throw an exception.");
+			} catch (Throwable t) {
+				assertThat(ExceptionUtils.findThrowable(t, java.net.SocketTimeoutException.class).isPresent(), is(true));
+			}
+		} finally {
+			clientConfig.setInteger(BlobServerOptions.SO_TIMEOUT, oldSoTimeout);
+			getBlobServer().setBlockingMillis(0);
+		}
+	}
+
+	static class TestBlobServer extends BlobServer {
+
+		private volatile long blockingMillis = 0;
+
+		TestBlobServer(Configuration config, BlobStore blobStore) throws IOException {
+			super(config, blobStore);
+		}
+
+		@Override
+		void getFileInternal(@Nullable JobID jobId, BlobKey blobKey, File localFile) throws IOException {
+			if (blockingMillis > 0) {
+				try {
+					Thread.sleep(blockingMillis);
+				} catch (InterruptedException e) {
+					throw new IOException(e);
+				}
+			}
+
+			super.getFileInternal(jobId, blobKey, localFile);
+		}
+
+		void setBlockingMillis(long millis) {
+			this.blockingMillis = millis;
 		}
 	}
 }

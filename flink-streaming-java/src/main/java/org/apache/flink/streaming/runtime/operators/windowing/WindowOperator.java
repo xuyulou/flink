@@ -319,11 +319,14 @@ public class WindowOperator<K, IN, ACC, OUT, W extends Window>
 									"event-time window cannot become earlier than the current watermark " +
 									"by merging. Current watermark: " + internalTimerService.currentWatermark() +
 									" window: " + mergeResult);
-						} else if (!windowAssigner.isEventTime() && mergeResult.maxTimestamp() <= internalTimerService.currentProcessingTime()) {
-							throw new UnsupportedOperationException("The end timestamp of a " +
+						} else if (!windowAssigner.isEventTime()) {
+							long currentProcessingTime = internalTimerService.currentProcessingTime();
+							if (mergeResult.maxTimestamp() <= currentProcessingTime) {
+								throw new UnsupportedOperationException("The end timestamp of a " +
 									"processing-time window cannot become earlier than the current processing time " +
-									"by merging. Current processing time: " + internalTimerService.currentProcessingTime() +
+									"by merging. Current processing time: " + currentProcessingTime +
 									" window: " + mergeResult);
+							}
 						}
 
 						triggerContext.key = key;
@@ -446,19 +449,17 @@ public class WindowOperator<K, IN, ACC, OUT, W extends Window>
 			mergingWindows = null;
 		}
 
-		ACC contents = null;
-		if (windowState != null) {
-			contents = windowState.get();
-		}
+		TriggerResult triggerResult = triggerContext.onEventTime(timer.getTimestamp());
 
-		if (contents != null) {
-			TriggerResult triggerResult = triggerContext.onEventTime(timer.getTimestamp());
-			if (triggerResult.isFire()) {
+		if (triggerResult.isFire()) {
+			ACC contents = windowState.get();
+			if (contents != null) {
 				emitWindowContents(triggerContext.window, contents);
 			}
-			if (triggerResult.isPurge()) {
-				windowState.clear();
-			}
+		}
+
+		if (triggerResult.isPurge()) {
+			windowState.clear();
 		}
 
 		if (windowAssigner.isEventTime() && isCleanupTime(triggerContext.window, timer.getTimestamp())) {
@@ -494,19 +495,17 @@ public class WindowOperator<K, IN, ACC, OUT, W extends Window>
 			mergingWindows = null;
 		}
 
-		ACC contents = null;
-		if (windowState != null) {
-			contents = windowState.get();
-		}
+		TriggerResult triggerResult = triggerContext.onProcessingTime(timer.getTimestamp());
 
-		if (contents != null) {
-			TriggerResult triggerResult = triggerContext.onProcessingTime(timer.getTimestamp());
-			if (triggerResult.isFire()) {
+		if (triggerResult.isFire()) {
+			ACC contents = windowState.get();
+			if (contents != null) {
 				emitWindowContents(triggerContext.window, contents);
 			}
-			if (triggerResult.isPurge()) {
-				windowState.clear();
-			}
+		}
+
+		if (triggerResult.isPurge()) {
+			windowState.clear();
 		}
 
 		if (!windowAssigner.isEventTime() && isCleanupTime(triggerContext.window, timer.getTimestamp())) {

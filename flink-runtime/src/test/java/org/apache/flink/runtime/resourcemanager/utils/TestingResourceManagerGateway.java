@@ -43,11 +43,13 @@ import org.apache.flink.runtime.resourcemanager.SlotRequest;
 import org.apache.flink.runtime.rest.messages.taskmanager.TaskManagerInfo;
 import org.apache.flink.runtime.taskexecutor.FileType;
 import org.apache.flink.runtime.taskexecutor.SlotReport;
+import org.apache.flink.runtime.taskexecutor.TaskExecutorHeartbeatPayload;
 import org.apache.flink.runtime.taskexecutor.TaskExecutorRegistrationSuccess;
 import org.apache.flink.util.Preconditions;
 
 import java.util.Collection;
 import java.util.Collections;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
@@ -62,8 +64,6 @@ public class TestingResourceManagerGateway implements ResourceManagerGateway {
 	private final ResourceManagerId resourceManagerId;
 
 	private final ResourceID ownResourceId;
-
-	private final long heartbeatInterval;
 
 	private final String address;
 
@@ -95,20 +95,17 @@ public class TestingResourceManagerGateway implements ResourceManagerGateway {
 		this(
 			ResourceManagerId.generate(),
 			ResourceID.generate(),
-			10000L,
-			"localhost",
+			"localhost/" + UUID.randomUUID(),
 			"localhost");
 	}
 
 	public TestingResourceManagerGateway(
 			ResourceManagerId resourceManagerId,
 			ResourceID resourceId,
-			long heartbeatInterval,
 			String address,
 			String hostname) {
 		this.resourceManagerId = Preconditions.checkNotNull(resourceManagerId);
 		this.ownResourceId = Preconditions.checkNotNull(resourceId);
-		this.heartbeatInterval = heartbeatInterval;
 		this.address = Preconditions.checkNotNull(address);
 		this.hostname = Preconditions.checkNotNull(hostname);
 		this.slotFutureReference = new AtomicReference<>();
@@ -174,7 +171,6 @@ public class TestingResourceManagerGateway implements ResourceManagerGateway {
 
 		return CompletableFuture.completedFuture(
 			new JobMasterRegistrationSuccess(
-				heartbeatInterval,
 				resourceManagerId,
 				ownResourceId));
 	}
@@ -227,7 +223,6 @@ public class TestingResourceManagerGateway implements ResourceManagerGateway {
 				new TaskExecutorRegistrationSuccess(
 					new InstanceID(),
 					ownResourceId,
-					heartbeatInterval,
 					new ClusterInformation("localhost", 1234)));
 		}
 	}
@@ -242,16 +237,6 @@ public class TestingResourceManagerGateway implements ResourceManagerGateway {
 	}
 
 	@Override
-	public void registerInfoMessageListener(String infoMessageListenerAddress) {
-
-	}
-
-	@Override
-	public void unRegisterInfoMessageListener(String infoMessageListenerAddress) {
-
-	}
-
-	@Override
 	public CompletableFuture<Acknowledge> deregisterApplication(ApplicationStatus finalStatus, String diagnostics) {
 		return CompletableFuture.completedFuture(Acknowledge.get());
 	}
@@ -262,11 +247,11 @@ public class TestingResourceManagerGateway implements ResourceManagerGateway {
 	}
 
 	@Override
-	public void heartbeatFromTaskManager(ResourceID heartbeatOrigin, SlotReport slotReport) {
+	public void heartbeatFromTaskManager(ResourceID heartbeatOrigin, TaskExecutorHeartbeatPayload heartbeatPayload) {
 		final BiConsumer<ResourceID, SlotReport> currentTaskExecutorHeartbeatConsumer = taskExecutorHeartbeatConsumer;
 
 		if (currentTaskExecutorHeartbeatConsumer != null) {
-			currentTaskExecutorHeartbeatConsumer.accept(heartbeatOrigin, slotReport);
+			currentTaskExecutorHeartbeatConsumer.accept(heartbeatOrigin, heartbeatPayload.getSlotReport());
 		}
 	}
 
@@ -305,11 +290,11 @@ public class TestingResourceManagerGateway implements ResourceManagerGateway {
 
 	@Override
 	public CompletableFuture<ResourceOverview> requestResourceOverview(Time timeout) {
-		return FutureUtils.completedExceptionally(new UnsupportedOperationException("Not yet implemented"));
+		return CompletableFuture.completedFuture(new ResourceOverview(1, 1, 1));
 	}
 
 	@Override
-	public CompletableFuture<Collection<Tuple2<ResourceID, String>>> requestTaskManagerMetricQueryServicePaths(Time timeout) {
+	public CompletableFuture<Collection<Tuple2<ResourceID, String>>> requestTaskManagerMetricQueryServiceAddresses(Time timeout) {
 		return CompletableFuture.completedFuture(Collections.emptyList());
 	}
 

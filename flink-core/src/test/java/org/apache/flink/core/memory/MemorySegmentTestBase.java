@@ -304,6 +304,45 @@ public abstract class MemorySegmentTestBase {
 	}
 
 	@Test
+	public void testCopyUnsafeIndexOutOfBounds() {
+		byte[] bytes = new byte[pageSize];
+		MemorySegment segment = createSegment(pageSize);
+
+		try {
+			segment.copyToUnsafe(1, bytes, 0, pageSize);
+			fail("should fail with an IndexOutOfBoundsException");
+		}
+		catch (IndexOutOfBoundsException ignored) {}
+
+		try {
+			segment.copyFromUnsafe(1, bytes, 0, pageSize);
+			fail("should fail with an IndexOutOfBoundsException");
+		}
+		catch (IndexOutOfBoundsException ignored) {}
+	}
+
+	@Test
+	public void testEqualTo() {
+		MemorySegment seg1 = createSegment(pageSize);
+		MemorySegment seg2 = createSegment(pageSize);
+
+		byte[] referenceArray = new byte[pageSize];
+		seg1.put(0, referenceArray);
+		seg2.put(0, referenceArray);
+
+		int i = new Random().nextInt(pageSize - 8);
+
+		seg1.put(i, (byte) 10);
+		assertFalse(seg1.equalTo(seg2, i, i, 9));
+
+		seg1.put(i, (byte) 0);
+		assertTrue(seg1.equalTo(seg2, i, i, 9));
+
+		seg1.put(i + 8, (byte) 10);
+		assertFalse(seg1.equalTo(seg2, i, i, 9));
+	}
+
+	@Test
 	public void testCharAccess() {
 		final MemorySegment segment = createSegment(pageSize);
 
@@ -1630,6 +1669,7 @@ public abstract class MemorySegmentTestBase {
 		{
 			final MemorySegment segment = createSegment(pageSize);
 			byte[] expected = new byte[pageSize];
+			segment.put(0, expected, 0, pageSize);
 
 			for (int i = 0; i < 200; i++) {
 				int numBytes = random.nextInt(pageSize - 10) + 1;

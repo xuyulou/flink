@@ -18,20 +18,15 @@
 
 package org.apache.flink.client.program;
 
-import org.apache.flink.api.common.Plan;
+import org.apache.flink.api.common.JobID;
+import org.apache.flink.api.dag.Pipeline;
+import org.apache.flink.client.ClientUtils;
+import org.apache.flink.client.FlinkPipelineTranslationUtil;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.core.fs.Path;
-import org.apache.flink.optimizer.DataStatistics;
-import org.apache.flink.optimizer.Optimizer;
-import org.apache.flink.optimizer.costs.DefaultCostEstimator;
-import org.apache.flink.optimizer.plan.FlinkPlan;
-import org.apache.flink.optimizer.plan.OptimizedPlan;
-import org.apache.flink.optimizer.plan.StreamingPlan;
-import org.apache.flink.optimizer.plantranslate.JobGraphGenerator;
+import org.apache.flink.optimizer.CompilerException;
 import org.apache.flink.runtime.jobgraph.JobGraph;
 
-import java.net.URISyntaxException;
-import java.net.URL;
+import javax.annotation.Nullable;
 
 /**
  * Utility class for {@link PackagedProgram} related operations.
@@ -39,7 +34,43 @@ import java.net.URL;
 public class PackagedProgramUtils {
 
 	/**
-	 * Creates a {@link JobGraph} from the given {@link PackagedProgram}.
+	 * Creates a {@link JobGraph} with a specified {@link JobID}
+	 * from the given {@link PackagedProgram}.
+	 *
+	 * @param packagedProgram to extract the JobGraph from
+	 * @param configuration to use for the optimizer and job graph generator
+	 * @param defaultParallelism for the JobGraph
+	 * @param jobID the pre-generated job id
+	 * @return JobGraph extracted from the PackagedProgram
+	 * @throws ProgramInvocationException if the JobGraph generation failed
+	 */
+	public static JobGraph createJobGraph(
+			PackagedProgram packagedProgram,
+			Configuration configuration,
+			int defaultParallelism,
+			@Nullable JobID jobID) throws ProgramInvocationException {
+
+		Thread.currentThread().setContextClassLoader(packagedProgram.getUserCodeClassLoader());
+
+		final OptimizerPlanEnvironment optimizerPlanEnvironment = new OptimizerPlanEnvironment();
+		optimizerPlanEnvironment.setParallelism(defaultParallelism);
+		final Pipeline pipeline = optimizerPlanEnvironment.getPipeline(packagedProgram);
+
+		final JobGraph jobGraph = FlinkPipelineTranslationUtil.getJobGraph(pipeline, configuration, defaultParallelism);
+
+		if (jobID != null) {
+			jobGraph.setJobID(jobID);
+		}
+		ClientUtils.addJarFiles(jobGraph, packagedProgram.getAllLibraries());
+		jobGraph.setClasspaths(packagedProgram.getClasspaths());
+		jobGraph.setSavepointRestoreSettings(packagedProgram.getSavepointSettings());
+
+		return jobGraph;
+	}
+
+	/**
+	 * Creates a {@link JobGraph} with a random {@link JobID}
+	 * from the given {@link PackagedProgram}.
 	 *
 	 * @param packagedProgram to extract the JobGraph from
 	 * @param configuration to use for the optimizer and job graph generator
@@ -48,55 +79,27 @@ public class PackagedProgramUtils {
 	 * @throws ProgramInvocationException if the JobGraph generation failed
 	 */
 	public static JobGraph createJobGraph(
-			PackagedProgram packagedProgram,
-			Configuration configuration,
-			int defaultParallelism) throws ProgramInvocationException {
-		Thread.currentThread().setContextClassLoader(packagedProgram.getUserCodeClassLoader());
-		final Optimizer optimizer = new Optimizer(new DataStatistics(), new DefaultCostEstimator(), configuration);
-		final FlinkPlan flinkPlan;
+		PackagedProgram packagedProgram,
+		Configuration configuration,
+		int defaultParallelism) throws ProgramInvocationException {
+		return createJobGraph(packagedProgram, configuration, defaultParallelism, null);
+	}
 
-		if (packagedProgram.isUsingProgramEntryPoint()) {
+	public static Pipeline getPipelineFromProgram(PackagedProgram prog, int parallelism)
+			throws CompilerException, ProgramInvocationException {
+		final ClassLoader contextClassLoader = Thread.currentThread().getContextClassLoader();
+		try {
+			Thread.currentThread().setContextClassLoader(prog.getUserCodeClassLoader());
 
-			final JobWithJars jobWithJars = packagedProgram.getPlanWithJars();
-
-			final Plan plan = jobWithJars.getPlan();
-
-			if (plan.getDefaultParallelism() <= 0) {
-				plan.setDefaultParallelism(defaultParallelism);
+			// temporary hack to support the optimizer plan preview
+			OptimizerPlanEnvironment env = new OptimizerPlanEnvironment();
+			if (parallelism > 0) {
+				env.setParallelism(parallelism);
 			}
-
-			flinkPlan = optimizer.compile(jobWithJars.getPlan());
-		} else if (packagedProgram.isUsingInteractiveMode()) {
-			final OptimizerPlanEnvironment optimizerPlanEnvironment = new OptimizerPlanEnvironment(optimizer);
-
-			optimizerPlanEnvironment.setParallelism(defaultParallelism);
-
-			flinkPlan = optimizerPlanEnvironment.getOptimizedPlan(packagedProgram);
-		} else {
-			throw new ProgramInvocationException("PackagedProgram does not have a valid invocation mode.");
+			return env.getPipeline(prog);
+		} finally {
+			Thread.currentThread().setContextClassLoader(contextClassLoader);
 		}
-
-		final JobGraph jobGraph;
-
-		if (flinkPlan instanceof StreamingPlan) {
-			jobGraph = ((StreamingPlan) flinkPlan).getJobGraph();
-			jobGraph.setSavepointRestoreSettings(packagedProgram.getSavepointSettings());
-		} else {
-			final JobGraphGenerator jobGraphGenerator = new JobGraphGenerator(configuration);
-			jobGraph = jobGraphGenerator.compileJobGraph((OptimizedPlan) flinkPlan);
-		}
-
-		for (URL url : packagedProgram.getAllLibraries()) {
-			try {
-				jobGraph.addJar(new Path(url.toURI()));
-			} catch (URISyntaxException e) {
-				throw new ProgramInvocationException("Invalid URL for jar file: " + url + '.', e);
-			}
-		}
-
-		jobGraph.setClasspaths(packagedProgram.getClasspaths());
-
-		return jobGraph;
 	}
 
 	private PackagedProgramUtils() {}

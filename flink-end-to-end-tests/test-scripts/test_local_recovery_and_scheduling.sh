@@ -34,27 +34,22 @@ function check_logs {
 
     if [ ${failed_local_recovery} -ne 0 ]
     then
-        PASS=""
         echo "FAILURE: Found ${failed_local_recovery} failed attempt(s) for local recovery of correctly scheduled task(s)."
+        exit 1
     fi
 
     if [ ${attempt_local_recovery} -eq 0 ]
     then
-        PASS=""
         echo "FAILURE: Found no attempt for local recovery. Configuration problem?"
+        exit 1
     fi
 }
 
-# This function does a cleanup after the test. The configuration is restored, the watchdog is terminated and temporary
+# This function does a cleanup after the test. The watchdog is terminated and temporary
 # files and folders are deleted.
 function cleanup_after_test {
-    # Reset the configurations
-    sed -i -e 's/log4j.rootLogger=.*/log4j.rootLogger=INFO, file/' "$FLINK_DIR/conf/log4j.properties"
-    #
     kill ${watchdog_pid} 2> /dev/null
     wait ${watchdog_pid} 2> /dev/null
-    #
-    cleanup
 }
 
 # Calls the cleanup step for this tests and exits with an error.
@@ -71,20 +66,24 @@ function run_local_recovery_test {
     local incremental=$4
     local kill_jvm=$5
 
-    echo "Running local recovery test on ${backend} backend: incremental checkpoints = ${incremental}, kill JVM = ${kill_jvm}."
-    TEST_PROGRAM_JAR=$TEST_INFRA_DIR/../../flink-end-to-end-tests/flink-local-recovery-and-allocation-test/target/StickyAllocationAndLocalRecoveryTestJob.jar
+    echo "Running local recovery test with configuration:
+        parallelism: ${parallelism}
+        max attempts: ${max_attempts}
+        backend: ${backend}
+        incremental checkpoints: ${incremental}
+        kill JVM: ${kill_jvm}"
 
-    # Backup conf and configure for HA
-    backup_config
+    TEST_PROGRAM_JAR=${END_TO_END_DIR}/flink-local-recovery-and-allocation-test/target/StickyAllocationAndLocalRecoveryTestJob.jar
+    # configure for HA
     create_ha_config
 
     # Enable debug logging
     sed -i -e 's/log4j.rootLogger=.*/log4j.rootLogger=DEBUG, file/' "$FLINK_DIR/conf/log4j.properties"
 
     # Enable local recovery
-    set_conf "state.backend.local-recovery" "true"
+    set_config_key "state.backend.local-recovery" "true"
     # Ensure that each TM only has one operator(chain)
-    set_conf "taskmanager.numberOfTaskSlots" "1"
+    set_config_key "taskmanager.numberOfTaskSlots" "1"
 
     rm $FLINK_DIR/log/* 2> /dev/null
 
@@ -111,11 +110,6 @@ function run_local_recovery_test {
 
 ## MAIN
 trap cleanup_after_test_and_exit_fail EXIT
-run_local_recovery_test 4 3 "file" "false" "false"
-run_local_recovery_test 4 3 "file" "false" "true"
-run_local_recovery_test 4 10 "rocks" "false" "false"
-run_local_recovery_test 4 10 "rocks" "true" "false"
-run_local_recovery_test 4 10 "rocks" "false" "true"
-run_local_recovery_test 4 10 "rocks" "true" "true"
+run_local_recovery_test "$@"
 trap - EXIT
 exit 0
